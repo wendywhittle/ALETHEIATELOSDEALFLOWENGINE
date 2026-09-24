@@ -1,0 +1,12 @@
+# Render blueprint for the AletheiaTelos DealFlow Engine.
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: aletheiatelos-dealflow
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 2"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.3
