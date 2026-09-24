@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Results {{ deal.deal_id }} — AletheiaTelos DealFlow Engine{% endblock %}
+{% block body %}
+<h1>Results for {{ deal.name }}</h1>
+<p><span class="badge">{{ deal.deal_id }}</span>
+   <span class="muted">{{ deal.asset_type }} · {{ deal.location }}</span></p>
+
+<p style="font-size:19px;"><strong>Based on the information you provided.</strong></p>
+
+<div class="card">
+  <h2 style="margin-top:0;border:none;">What the numbers say</h2>
+  <div class="wrap"><table>
+    <tr><th>Metric</th><th class="num">Value</th><th>Basis</th></tr>
+    {% for m in available %}
+    <tr>
+      <td>{{ m.label }}</td>
+      <td class="num">{% if m.kind=="pct" %}{{ m.value|pct }}{% elif m.kind=="num" %}{{ m.value|num }}{% else %}{{ m.value|money }}{% endif %}</td>
+      <td><span class="state">{{ m.status }}</span>{% if m.inputs %}<br><span class="muted" style="font-size:13px;">from {{ m.inputs|join(", ") }}</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table></div>
+</div>
+
+{% if missing %}
+<div class="card">
+  <h2 style="margin-top:0;border:none;">Not computable from your inputs</h2>
+  <ul>
+  {% for m in missing %}
+    <li><strong>{{ m.label }}</strong> — {{ m.status }}{% if m.reason %}: {{ m.reason }}{% endif %}</li>
+  {% endfor %}
+  </ul>
+  <p class="muted">Supply the missing inputs and resubmit (or update the deal) to unlock these metrics.</p>
+</div>
+{% endif %}
+
+<div class="disclaimer">
+  <strong>Analytical decision support only.</strong> This output is not an investment
+  recommendation, authorization, guarantee, prediction, or financial advice, and it is
+  not an autonomous investment decision. A person must review the deal record and decide.
+</div>
+
+<p>
+  <a class="btn" href="{{ url_for('download_excel', deal_id=deal.deal_id) }}">Download Excel model</a>
+  <a class="btn secondary" href="{{ url_for('detail', deal_id=deal.deal_id) }}">Open deal record</a>
+  <a class="btn secondary" href="{{ url_for('pipeline') }}">Pipeline</a>
+</p>
+{% endblock %}

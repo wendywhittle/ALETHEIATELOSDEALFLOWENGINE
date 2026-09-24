@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}{{ deal.deal_id }} — AletheiaTelos DealFlow Engine{% endblock %}
+{% block body %}
+<h1>{{ deal.name }}</h1>
+<p><span class="badge">{{ deal.deal_id }}</span>
+   <span class="badge">{{ deal.status }}</span></p>
+<p class="muted">{{ deal.asset_type }} · {{ deal.location }}{% if deal.source %} · via {{ deal.source }}{% endif %}</p>
+
+<div class="card">
+  <h2 style="margin-top:0;border:none;">Review</h2>
+  {% if status_error %}<div class="errors">{{ status_error }}</div>{% endif %}
+  <form method="post" action="{{ url_for('change_status', deal_id=deal.deal_id) }}">
+    <label for="status">Status <span class="opt">— changed by a human reviewer</span></label>
+    <select id="status" name="status">
+      {% for s in next_statuses %}
+      <option value="{{ s }}">{{ deal.status }} → {{ s }}</option>
+      {% endfor %}
+    </select>
+    <button class="btn" type="submit" style="margin-top:14px;">Update status</button>
+  </form>
+  <p class="muted" style="font-size:14px;">Status is workflow state only. It is not an
+  investment decision made by the software.</p>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0;border:none;">Due diligence</h2>
+  <p><strong>Due diligence: {{ dd_cleared }} of {{ dd_total }} cleared</strong></p>
+  {% for cat in dd_groups %}
+  <h3>{{ cat.category }}</h3>
+  {% for item in cat["items"] %}
+  <div style="border:1px solid #ddd;border-radius:10px;padding:12px;margin:12px 0;">
+    <p style="margin-top:0;"><strong>{{ item.label }}</strong>
+       <span class="state">{{ item.status }}</span></p>
+    <form method="post" action="{{ url_for('dd_status', deal_id=deal.deal_id) }}">
+      <input type="hidden" name="item_key" value="{{ item.item_key }}">
+      <label>Status</label>
+      <select name="status">
+        {% for s in dd_statuses %}
+        <option value="{{ s }}" {% if s == item.status %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn secondary" type="submit">Update status</button>
+    </form>
+    <form method="post" action="{{ url_for('dd_notes', deal_id=deal.deal_id) }}">
+      <input type="hidden" name="item_key" value="{{ item.item_key }}">
+      <label>Notes</label>
+      <textarea name="notes" rows="2">{{ item.notes or "" }}</textarea>
+      <button class="btn secondary" type="submit">Save notes</button>
+    </form>
+    <form method="post" action="{{ url_for('dd_upload', deal_id=deal.deal_id) }}"
+          enctype="multipart/form-data">
+      <input type="hidden" name="item_key" value="{{ item.item_key }}">
+      <label>Attach document <span class="opt">— max 50 MB</span></label>
+      <input type="file" name="document">
+      <label>Document note <span class="opt">optional</span></label>
+      <input type="text" name="note" placeholder="e.g. inspector's full report">
+      <button class="btn secondary" type="submit">Upload</button>
+    </form>
+    {% set docs = dd_docs_by_item.get(item.item_key, []) %}
+    {% if docs %}
+    <p class="muted" style="font-size:14px;">Documents:</p>
+    <ul>
+      {% for d in docs %}
+      <li><a href="{{ url_for('dd_download', deal_id=deal.deal_id, doc_id=d.id) }}">{{ d.filename }}</a>
+        <span class="muted" style="font-size:13px;">{{ d.uploaded_at[:10] }}{% if d.note %} — {{ d.note }}{% endif %}</span></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+  {% endfor %}
+  {% endfor %}
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0;border:none;">Calculated outputs</h2>
+  <div class="wrap"><table>
+    <tr><th>Metric</th><th class="num">Value</th><th>State</th><th>Basis</th></tr>
+    {% for m in available %}
+    <tr>
+      <td>{{ m.label }}</td>
+      <td class="num">{% if m.kind=="pct" %}{{ m.value|pct }}{% elif m.kind=="num" %}{{ m.value|num }}{% else %}{{ m.value|money }}{% endif %}</td>
+      <td><span class="state">{{ m.status }}</span></td>
+      <td><span class="muted" style="font-size:13px;">{{ m.inputs|join(", ") }}</span></td>
+    </tr>
+    {% endfor %}
+  </table></div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0;border:none;">Original inputs</h2>
+  <div class="wrap"><table>
+    <tr><th>Input</th><th class="num">Value</th><th>State</th></tr>
+    <tr><td>Purchase price</td><td class="num">{{ deal.inputs.purchase_price|any }}</td>
+        <td><span class="state">{{ "supplied" if deal.inputs.purchase_price is not none else "unavailable" }}</span></td></tr>
+    {% for f in input_fields if f != "purchase_price" %}
+    <tr><td>{{ f.replace("_"," ") }}</td><td class="num">{{ deal.inputs[f]|any }}</td>
+        <td><span class="state">{{ "supplied" if deal.inputs[f] is not none else "unavailable" }}</span></td></tr>
+    {% endfor %}
+  </table></div>
+  <p class="muted" style="font-size:14px;">Original inputs are never overwritten by calculations.</p>
+</div>
+
+{% if missing %}
+<div class="card">
+  <h2 style="margin-top:0;border:none;">Missing information</h2>
+  <ul>
+  {% for m in missing %}
+    <li><strong>{{ m.label }}</strong> — {{ m.status }}{% if m.reason %}: {{ m.reason }}{% endif %}</li>
+  {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2 style="margin-top:0;border:none;">Contact</h2>
+  <p>Name: {{ deal.contact.contact_name or "—" }}<br>
+     Email: {{ deal.contact.contact_email or "—" }}<br>
+     Phone: {{ deal.contact.contact_phone or "—" }}</p>
+  <h2>Record</h2>
+  <p class="muted">Submitted {{ deal.created_at }} · Last updated {{ deal.updated_at }}<br>
+  {% if deal.artifact_path %}Excel artifact: {{ deal.artifact_path }}{% else %}No Excel artifact generated yet.{% endif %}</p>
+  <p><a class="btn" href="{{ url_for('download_excel', deal_id=deal.deal_id) }}">Download Excel model</a>
+     <a class="btn secondary" href="{{ url_for('pipeline') }}">Back to pipeline</a></p>
+</div>
+{% endblock %}

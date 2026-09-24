@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}AletheiaTelos DealFlow Engine — Have a deal?{% endblock %}
+{% block body %}
+<h1>Have a deal?<br>Enter the basics and see what the numbers say.</h1>
+<p style="font-size:19px;">Submit a property's core numbers and get an immediate,
+deterministic underwriting read — cap rate, financing, cash flow, returns —
+plus a structured deal record and an Excel model for internal review.</p>
+<p>
+  <a class="btn" href="{{ url_for('intake') }}">Enter a deal</a>
+  <a class="btn secondary" href="{{ url_for('pipeline') }}">View pipeline</a>
+</p>
+<div class="card">
+  <h2 style="margin-top:0;border:none;">How it works</h2>
+  <ol style="font-size:18px;">
+    <li><strong>Enter</strong> the deal — name, type, location, price, NOI.</li>
+    <li><strong>Submit</strong> — every number is validated before acceptance.</li>
+    <li><strong>See results</strong> — only what your numbers actually support.</li>
+  </ol>
+  <p class="muted">Missing information is never invented. A metric that can't be
+  computed from your inputs is shown as unavailable — never as a silent zero.
+  Every derived number shows exactly which inputs produced it.</p>
+</div>
+<div class="disclaimer">
+  <strong>What this is:</strong> analytical decision support. <strong>What it isn't:</strong>
+  an investment recommendation, authorization, guarantee, prediction, financial
+  advice, or an autonomous investment decision. Humans decide; the engine calculates.
+</div>
+{% endblock %}

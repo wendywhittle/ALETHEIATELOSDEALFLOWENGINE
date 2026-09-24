@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}Enter a deal — AletheiaTelos DealFlow Engine{% endblock %}
+{% block body %}
+<h1>Enter a deal</h1>
+<p class="muted">Fields marked optional can be left blank. Anything the numbers
+can't support will simply show as unavailable — nothing is guessed for you.</p>
+
+{% if errors %}
+<div class="errors">
+  <strong>Please fix the following:</strong>
+  <ul>
+  {% for e in errors %}<li>{{ e.message }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<form method="post" action="{{ url_for('intake') }}">
+  <div class="card">
+    <h2 style="margin-top:0;border:none;">Property</h2>
+    <label for="name">Deal / property name *</label>
+    <input type="text" id="name" name="name" required value="{{ form.get('name','') }}">
+
+    <label for="asset_type">Asset type *</label>
+    <select id="asset_type" name="asset_type" required>
+      {% for t in ["Single-family","Multi-family","Commercial","Mixed-use","Land","Other"] %}
+      <option value="{{ t }}" {% if form.get('asset_type')==t %}selected{% endif %}>{{ t }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="location">Location *</label>
+    <input type="text" id="location" name="location" required placeholder="City, ST"
+           value="{{ form.get('location','') }}">
+
+    <label for="source">Deal source <span class="opt">— where this deal came from</span></label>
+    <input type="text" id="source" name="source" list="sources"
+           placeholder="Facebook Marketplace" value="{{ form.get('source','') }}">
+    <datalist id="sources">
+      <option value="Facebook Marketplace"></option>
+      <option value="LoopNet"></option>
+      <option value="Crexi"></option>
+      <option value="Direct / Owner"></option>
+      <option value="Other"></option>
+    </datalist>
+
+    <label for="purchase_price">Purchase price * <span class="opt">(numbers only)</span></label>
+    <input type="number" id="purchase_price" name="purchase_price" required min="0" step="any"
+           inputmode="decimal" value="{{ form.get('purchase_price','') }}">
+
+    <label for="noi">Annual NOI <span class="opt">— optional; if you supply both EGI and operating expenses below, NOI is derived from them</span></label>
+    <input type="number" id="noi" name="noi" min="0" step="any" inputmode="decimal"
+           value="{{ form.get('noi','') }}">
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;border:none;">Financial details <span class="opt muted">— all optional</span></h2>
+    <label for="egi">Annual EGI <span class="opt">optional — or derived below from scheduled rent, vacancy loss, and other income</span></label>
+    <input type="number" id="egi" name="egi" min="0" step="any" inputmode="decimal"
+           value="{{ form.get('egi','') }}">
+    <label for="operating_expenses">Annual operating expenses <span class="opt">optional</span></label>
+    <input type="number" id="operating_expenses" name="operating_expenses" min="0" step="any"
+           inputmode="decimal" value="{{ form.get('operating_expenses','') }}">
+    <label for="occupancy">Occupancy % <span class="opt">optional</span></label>
+    <input type="number" id="occupancy" name="occupancy" min="0" max="100" step="any"
+           inputmode="decimal" value="{{ form.get('occupancy','') }}">
+    <label for="ltv">LTV % <span class="opt">optional</span></label>
+    <input type="number" id="ltv" name="ltv" min="0" max="100" step="any" inputmode="decimal"
+           value="{{ form.get('ltv','') }}">
+    <label for="interest_rate">Interest rate % <span class="opt">optional</span></label>
+    <input type="number" id="interest_rate" name="interest_rate" min="0" step="any"
+           inputmode="decimal" value="{{ form.get('interest_rate','') }}">
+    <label for="amortization_years">Amortization (years) <span class="opt">optional</span></label>
+    <input type="number" id="amortization_years" name="amortization_years" min="0" step="any"
+           inputmode="decimal" value="{{ form.get('amortization_years','') }}">
+    <label for="hold_period">Hold period (years) <span class="opt">optional</span></label>
+    <input type="number" id="hold_period" name="hold_period" min="0" step="any" inputmode="decimal"
+           value="{{ form.get('hold_period','') }}">
+    <label for="exit_cap_rate">Exit cap rate % <span class="opt">optional</span></label>
+    <input type="number" id="exit_cap_rate" name="exit_cap_rate" min="0" step="any"
+           inputmode="decimal" value="{{ form.get('exit_cap_rate','') }}">
+    <label for="closing_costs">Closing costs <span class="opt">optional</span></label>
+    <input type="number" id="closing_costs" name="closing_costs" min="0" step="any"
+           inputmode="decimal" value="{{ form.get('closing_costs','') }}">
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;border:none;">Rental income detail <span class="opt muted">— optional</span></h2>
+    <p class="muted" style="font-size:14px;">If you supply all three, EGI is
+    derived as scheduled rent minus vacancy loss plus other income.</p>
+    <label for="scheduled_rent_annual">Annual scheduled rent <span class="opt">optional</span></label>
+    <input type="number" id="scheduled_rent_annual" name="scheduled_rent_annual" min="0" step="any"
+           inputmode="decimal" value="{{ form.get('scheduled_rent_annual','') }}">
+    <label for="vacancy_loss_annual">Annual vacancy / collection loss <span class="opt">optional</span></label>
+    <input type="number" id="vacancy_loss_annual" name="vacancy_loss_annual" min="0" step="any"
+           inputmode="decimal" value="{{ form.get('vacancy_loss_annual','') }}">
+    <label for="other_income_annual">Annual other income <span class="opt">optional</span></label>
+    <input type="number" id="other_income_annual" name="other_income_annual" min="0" step="any"
+           inputmode="decimal" value="{{ form.get('other_income_annual','') }}">
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;border:none;">Contact <span class="opt muted">— optional</span></h2>
+    <label for="contact_name">Name <span class="opt">optional</span></label>
+    <input type="text" id="contact_name" name="contact_name" value="{{ form.get('contact_name','') }}">
+    <label for="contact_email">Email <span class="opt">optional</span></label>
+    <input type="email" id="contact_email" name="contact_email" value="{{ form.get('contact_email','') }}">
+    <label for="contact_phone">Phone <span class="opt">optional</span></label>
+    <input type="tel" id="contact_phone" name="contact_phone" value="{{ form.get('contact_phone','') }}">
+  </div>
+
+  <button class="btn" type="submit">Submit deal &amp; see results</button>
+</form>
+{% endblock %}

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Pipeline — AletheiaTelos DealFlow Engine{% endblock %}
+{% block body %}
+<h1>Deal pipeline</h1>
+<p>
+  <a class="btn secondary" href="{{ url_for('pipeline') }}" {% if not active %}style="background:var(--accent);color:#fff;"{% endif %}>All</a>
+  {% for s in statuses %}
+  <a class="btn secondary" href="{{ url_for('pipeline', status=s) }}" {% if active==s %}style="background:var(--accent);color:#fff;"{% endif %}>{{ s }}</a>
+  {% endfor %}
+</p>
+{% if deals %}
+<div class="wrap"><table>
+  <tr><th>Deal ID</th><th>Name</th><th>Type</th><th>Location</th><th>Source</th>
+      <th class="num">Price</th><th class="num">NOI</th><th class="num">Cap rate</th>
+      <th>DD</th><th>Submitted</th><th>Status</th></tr>
+  {% for d in deals %}
+  <tr>
+    <td><a href="{{ url_for('detail', deal_id=d.deal_id) }}">{{ d.deal_id }}</a></td>
+    <td>{{ d.name }}</td>
+    <td>{{ d.asset_type }}</td>
+    <td>{{ d.location }}</td>
+    <td>{{ d.source or "—" }}</td>
+    <td class="num">{{ d.inputs.purchase_price|money }}</td>
+    <td class="num">{{ d.underwriting.noi.value|money if d.underwriting.noi.value is not none else "—" }}</td>
+    <td class="num">{{ d.underwriting.cap_rate.value|pct if d.underwriting.cap_rate.value is not none else "—" }}</td>
+    {% set dd = dd_map.get(d.deal_id, (0, 0)) %}
+    <td>{{ dd[0] }}/{{ dd[1] }}</td>
+    <td>{{ d.created_at[:10] }}</td>
+    <td><span class="badge">{{ d.status }}</span></td>
+  </tr>
+  {% endfor %}
+</table></div>
+{% else %}
+<p class="muted">No deals{% if active %} with status {{ active }}{% endif %} yet.
+<a href="{{ url_for('intake') }}">Enter the first one.</a></p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,7 @@
+# Runtime artifacts — never commit these.
+dealflow.db
+dealflow.db-journal
+artifacts/
+__pycache__/
+.pytest_cache/
+*.pyc
