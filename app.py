@@ -286,4 +286,6 @@ def dd_download(deal_id, doc_id):
 
 
 if __name__ == "__main__":
+    import seed
+    seed.seed_database()  # same restart-safe restore as production boot
     app.run(host="127.0.0.1", port=5000, debug=False)

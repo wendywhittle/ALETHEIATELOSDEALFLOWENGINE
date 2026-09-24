@@ -34,6 +34,17 @@ Open http://127.0.0.1:5000 — responsive on iPhone, iPad, tablet, desktop.
 The SQLite database (`dealflow.db`) and generated workbooks (`artifacts/`)
 are created in the repo directory on first use and are git-ignored.
 
+## Restart-safe seed data
+
+The Render free tier wipes `dealflow.db` on every restart. `seed.py` bakes
+the 43 curated nationwide listings (LoopNet research, 2026-09-24) into the
+app: `wsgi.py` (production) and `python3 app.py` (dev) call
+`seed.seed_database()` on every boot, restoring the pipeline — including the
+4 home-run deals triaged to PURSUE. Seeding is idempotent: existing deals
+(matched by name + location or listing URL) are never duplicated, and listed
+cap rates are recorded as evidence in the notes only, never used to derive
+NOI. Manual reseed: `python3 seed.py`.
+
 ## Run the tests
 
 ```bash
