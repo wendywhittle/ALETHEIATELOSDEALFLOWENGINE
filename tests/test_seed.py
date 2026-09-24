@@ -1,4 +1,4 @@
-"""Seed tests: the 43 curated deals restore on boot, idempotently, with the
+"""Seed tests: the 131 curated deals restore on boot, idempotently, with the
 home-run triage applied and listed cap rates kept as evidence only."""
 
 import os
@@ -25,10 +25,10 @@ class SeedCase(unittest.TestCase):
         del os.environ["DEALFLOW_DB"]
         self.tmp.cleanup()
 
-    def test_seed_inserts_43_deals(self):
+    def test_seed_inserts_131_deals(self):
         inserted = seed.seed_database()
-        self.assertEqual(len(inserted), 43)
-        self.assertEqual(len(records.list_deals()), 43)
+        self.assertEqual(len(inserted), 131)
+        self.assertEqual(len(records.list_deals()), 131)
         # deterministic order: home runs first
         first_four = [records.get_deal(d)["name"] for d in inserted[:4]]
         self.assertEqual(set(first_four), PURSUE_NAMES)
@@ -37,12 +37,12 @@ class SeedCase(unittest.TestCase):
         seed.seed_database()
         pursue = records.list_deals(status="PURSUE")
         self.assertEqual({d["name"] for d in pursue}, PURSUE_NAMES)
-        self.assertEqual(len(records.list_deals(status="NEW")), 39)
+        self.assertEqual(len(records.list_deals(status="NEW")), 127)
 
     def test_seed_is_idempotent(self):
         seed.seed_database()
         self.assertEqual(seed.seed_database(), [])
-        self.assertEqual(len(records.list_deals()), 43)
+        self.assertEqual(len(records.list_deals()), 131)
         self.assertEqual(len(records.list_deals(status="PURSUE")), 4)
 
     def test_skips_preexisting_source_url(self):
@@ -57,8 +57,8 @@ class SeedCase(unittest.TestCase):
             "notes": first["notes"],
         })
         inserted = seed.seed_database()
-        self.assertEqual(len(inserted), 42)
-        self.assertEqual(len(records.list_deals()), 43)
+        self.assertEqual(len(inserted), 130)
+        self.assertEqual(len(records.list_deals()), 131)
 
     def test_skips_preexisting_name_and_location(self):
         first = seed.SEED_DEALS[0]
@@ -72,8 +72,8 @@ class SeedCase(unittest.TestCase):
             "notes": first["notes"],
         })
         inserted = seed.seed_database()
-        self.assertEqual(len(inserted), 42)
-        self.assertEqual(len(records.list_deals()), 43)
+        self.assertEqual(len(inserted), 130)
+        self.assertEqual(len(records.list_deals()), 131)
 
     def test_listed_cap_is_evidence_not_noi(self):
         seed.seed_database()
@@ -87,6 +87,17 @@ class SeedCase(unittest.TestCase):
                     and "Nicollet" in d["name"]][0]
         self.assertIn("9.92%", nicollet["contact"]["notes"])
         self.assertIn("+342 bps", nicollet["contact"]["notes"])
+
+    def test_fsbo_bank_owned_seed_as_new_without_noi(self):
+        seed.seed_database()
+        extra = [d for d in records.list_deals()
+                 if d["asset_type"] in ("sfh", "bank-owned")]
+        self.assertEqual(len(extra), 88)
+        for deal in extra:
+            self.assertEqual(deal["status"], "NEW")
+            self.assertIsNone(deal["inputs"]["noi"])
+            self.assertEqual(
+                deal["underwriting"]["cap_rate"]["status"], "unavailable")
 
     def test_dd_checklist_seeded_for_seed_deals(self):
         seed.seed_database()
