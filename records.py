@@ -1,6 +1,7 @@
 """AletheiaTelos DealFlow Engine — canonical deal record persistence.
 
-One SQLite table (`deals`). The record is the canonical source of truth:
+One table (`deals`) plus due-diligence tables (`dd_items`, `dd_documents`).
+The record is the canonical source of truth:
 
   identity          deal_id, name, asset_type, location
   original_inputs   the 11 validated financial inputs, exactly as submitted
@@ -21,12 +22,29 @@ Rules:
 
 The submission path used by the web app AND the import CLI is submit_deal():
   raw intake dict -> validation -> record -> underwriting -> stored record.
+
+Backends:
+  - Default: local SQLite file (DEALFLOW_DB env, else dealflow.db next to
+    this file). Used for development and the test suite.
+  - Production: PostgreSQL when the DATABASE_URL environment variable is set
+    (any provider: Render Postgres, Neon, Supabase, ...). Requires the
+    `psycopg` package. All SQL is written once with `?` placeholders and
+    translated to `%s` for Postgres; the few dialect differences (DDL,
+    INSERT ... RETURNING, ON CONFLICT, information_schema) are branched in
+    one place each.
 """
 
 import datetime
 import json
 import os
 import sqlite3
+
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:  # pragma: no cover - psycopg absent in dev/test envs
+    psycopg = None
+    dict_row = None
 
 import underwriting
 import validation
@@ -123,13 +141,88 @@ CREATE TABLE IF NOT EXISTS deals (
 )
 """
 
+# PostgreSQL equivalents. Same tables and columns; SERIAL replaces
+# INTEGER PRIMARY KEY AUTOINCREMENT. CREATE TABLE IF NOT EXISTS and the
+# TEXT/UNIQUE/DEFAULT clauses are valid in both dialects.
+PG_SCHEMA = """
+CREATE TABLE IF NOT EXISTS deals (
+    id               SERIAL PRIMARY KEY,
+    deal_id          TEXT UNIQUE,
+    name             TEXT NOT NULL,
+    asset_type       TEXT NOT NULL,
+    location         TEXT NOT NULL,
+    source           TEXT NOT NULL DEFAULT '',
+    inputs_json      TEXT NOT NULL,
+    underwriting_json TEXT NOT NULL,
+    contact_json     TEXT NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'NEW',
+    artifact_path    TEXT,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL
+)
+"""
 
-def _ensure_source_column(conn):
+PG_DD_ITEMS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS dd_items (
+    id        SERIAL PRIMARY KEY,
+    deal_id   TEXT NOT NULL,
+    category  TEXT NOT NULL,
+    item_key  TEXT NOT NULL,
+    label     TEXT NOT NULL,
+    status    TEXT NOT NULL DEFAULT 'not_started',
+    notes     TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (deal_id, item_key)
+)
+"""
+
+PG_DD_DOCUMENTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS dd_documents (
+    id          SERIAL PRIMARY KEY,
+    deal_id     TEXT NOT NULL,
+    item_key    TEXT NOT NULL,
+    filename    TEXT NOT NULL,
+    stored_path TEXT NOT NULL,
+    note        TEXT NOT NULL DEFAULT '',
+    uploaded_at TEXT NOT NULL
+)
+"""
+
+
+def _database_url():
+    return os.environ.get("DATABASE_URL", "").strip()
+
+
+def _using_postgres(path=None):
+    """True when this operation should go to PostgreSQL.
+
+    An explicit `path` always means local SQLite (tests, CLI overrides);
+    otherwise DATABASE_URL selects Postgres.
+    """
+    return path is None and bool(_database_url())
+
+
+def _q(sql, pg):
+    """Translate `?` placeholders to `%s` for PostgreSQL.
+
+    Safe because no SQL string in this module contains a literal `?`
+    or `%` outside of parameter placeholders.
+    """
+    return sql.replace("?", "%s") if pg else sql
+
+
+def _ensure_source_column(conn, pg):
     """Add the `source` column to databases created before it existed."""
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(deals)").fetchall()]
+    if pg:
+        rows = conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'deals'").fetchall()
+        cols = [r["column_name"] for r in rows]
+    else:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(deals)").fetchall()]
     if "source" not in cols:
         conn.execute("ALTER TABLE deals ADD COLUMN source TEXT NOT NULL DEFAULT ''")
-        conn.commit()
 
 
 def _db_path(path=None):
@@ -137,13 +230,25 @@ def _db_path(path=None):
 
 
 def _connect(path=None):
+    pg = _using_postgres(path)
+    if pg:
+        if psycopg is None:
+            raise RuntimeError(
+                "DATABASE_URL is set but the 'psycopg' package is not installed.")
+        conn = psycopg.connect(_database_url(), row_factory=dict_row)
+        conn.execute(PG_SCHEMA)
+        conn.execute(PG_DD_ITEMS_SCHEMA)
+        conn.execute(PG_DD_DOCUMENTS_SCHEMA)
+        conn.commit()
+        _ensure_source_column(conn, pg=True)
+        return conn
     conn = sqlite3.connect(_db_path(path))
     conn.row_factory = sqlite3.Row
     conn.execute(SCHEMA)
     conn.execute(DD_ITEMS_SCHEMA)
     conn.execute(DD_DOCUMENTS_SCHEMA)
     conn.commit()
-    _ensure_source_column(conn)
+    _ensure_source_column(conn, pg=False)
     return conn
 
 
@@ -183,27 +288,32 @@ def submit_deal(raw, path=None):
     contact = {f: cleaned.get(f, "") for f in validation.CONTACT_FIELDS}
     extras = {f: cleaned.get(f, "") for f in validation.EXTRA_FIELDS}
 
+    pg = _using_postgres(path)
     now = _now_iso()
     conn = _connect(path)
     try:
-        cur = conn.execute(
+        insert_sql = _q(
             """INSERT INTO deals
                (name, asset_type, location, source, inputs_json, underwriting_json,
                 contact_json, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'NEW', ?, ?)""",
-            (cleaned["name"], cleaned["asset_type"], cleaned["location"],
-             cleaned.get("source", ""),
-             json.dumps(inputs), json.dumps({}),
-             json.dumps({**contact, **extras}), now, now),
-        )
-        row_id = cur.lastrowid
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'NEW', ?, ?)""", pg)
+        params = (cleaned["name"], cleaned["asset_type"], cleaned["location"],
+                  cleaned.get("source", ""),
+                  json.dumps(inputs), json.dumps({}),
+                  json.dumps({**contact, **extras}), now, now)
+        if pg:
+            cur = conn.execute(insert_sql + " RETURNING id", params)
+            row_id = cur.fetchone()["id"]
+        else:
+            cur = conn.execute(insert_sql, params)
+            row_id = cur.lastrowid
         deal_id = "AT-%s-%06d" % (datetime.datetime.now().year, row_id)
 
         result = underwriting.calculate(inputs)
 
         conn.execute(
-            "UPDATE deals SET deal_id = ?, underwriting_json = ?, updated_at = ? "
-            "WHERE id = ?",
+            _q("UPDATE deals SET deal_id = ?, underwriting_json = ?, updated_at = ? "
+               "WHERE id = ?", pg),
             (deal_id, json.dumps(result), _now_iso(), row_id),
         )
         seed_dd_checklist(deal_id, conn)
@@ -215,10 +325,11 @@ def submit_deal(raw, path=None):
 
 def get_deal(deal_id, path=None):
     """Return the canonical deal record dict, or None if unknown."""
+    pg = _using_postgres(path)
     conn = _connect(path)
     try:
         row = conn.execute(
-            "SELECT * FROM deals WHERE deal_id = ?", (deal_id,)).fetchone()
+            _q("SELECT * FROM deals WHERE deal_id = ?", pg), (deal_id,)).fetchone()
     finally:
         conn.close()
     return _row_to_deal(row) if row else None
@@ -226,11 +337,12 @@ def get_deal(deal_id, path=None):
 
 def list_deals(status=None, path=None):
     """Newest-first list of deal records, optionally filtered by status."""
+    pg = _using_postgres(path)
     conn = _connect(path)
     try:
         if status:
             rows = conn.execute(
-                "SELECT * FROM deals WHERE status = ? ORDER BY id DESC",
+                _q("SELECT * FROM deals WHERE status = ? ORDER BY id DESC", pg),
                 (status,)).fetchall()
         else:
             rows = conn.execute("SELECT * FROM deals ORDER BY id DESC").fetchall()
@@ -243,10 +355,12 @@ def set_status(deal_id, new_status, path=None):
     """Human-controlled status change. Enforces the documented transitions."""
     if new_status not in STATUSES:
         raise ValueError("Unknown status: %r" % (new_status,))
+    pg = _using_postgres(path)
     conn = _connect(path)
     try:
         row = conn.execute(
-            "SELECT status FROM deals WHERE deal_id = ?", (deal_id,)).fetchone()
+            _q("SELECT status FROM deals WHERE deal_id = ?", pg),
+            (deal_id,)).fetchone()
         if not row:
             raise ValueError("Unknown deal: %r" % (deal_id,))
         current = row["status"]
@@ -254,7 +368,8 @@ def set_status(deal_id, new_status, path=None):
             raise ValueError(
                 "Status change %s -> %s is not allowed." % (current, new_status))
         conn.execute(
-            "UPDATE deals SET status = ?, updated_at = ? WHERE deal_id = ?",
+            _q("UPDATE deals SET status = ?, updated_at = ? WHERE deal_id = ?",
+               pg),
             (new_status, _now_iso(), deal_id))
         conn.commit()
     finally:
@@ -264,10 +379,12 @@ def set_status(deal_id, new_status, path=None):
 
 def set_artifact(deal_id, artifact_path, path=None):
     """Record the generated Excel artifact reference on the deal."""
+    pg = _using_postgres(path)
     conn = _connect(path)
     try:
         conn.execute(
-            "UPDATE deals SET artifact_path = ?, updated_at = ? WHERE deal_id = ?",
+            _q("UPDATE deals SET artifact_path = ?, updated_at = ? WHERE deal_id = ?",
+               pg),
             (artifact_path, _now_iso(), deal_id))
         conn.commit()
     finally:
@@ -280,18 +397,22 @@ def seed_dd_checklist(deal_id, conn=None, path=None):
     """Seed the standard DD checklist for a deal. Idempotent: existing
     items are left untouched, so backfills never duplicate or reset work."""
     own = conn is None
+    pg = _using_postgres(path)
     if own:
         conn = _connect(path)
     try:
         now = _now_iso()
+        base = ("INSERT {ignore}INTO dd_items "
+                "(deal_id, category, item_key, label, status, notes, "
+                "created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, 'not_started', '', ?, ?)")
+        if pg:
+            sql = _q(base.format(ignore=""), pg) + \
+                " ON CONFLICT (deal_id, item_key) DO NOTHING"
+        else:
+            sql = base.format(ignore="OR IGNORE ")
         for category, item_key, label in DD_CHECKLIST:
-            conn.execute(
-                """INSERT OR IGNORE INTO dd_items
-                   (deal_id, category, item_key, label, status, notes,
-                    created_at, updated_at)
-                   VALUES (?, ?, ?, ?, 'not_started', '', ?, ?)""",
-                (deal_id, category, item_key, label, now, now),
-            )
+            conn.execute(sql, (deal_id, category, item_key, label, now, now))
         if own:
             conn.commit()
     finally:
@@ -329,10 +450,11 @@ def _dd_item_row(row):
 
 def list_dd_items(deal_id, path=None):
     """Checklist items for a deal, in checklist order."""
+    pg = _using_postgres(path)
     conn = _connect(path)
     try:
         rows = conn.execute(
-            "SELECT * FROM dd_items WHERE deal_id = ? ORDER BY id",
+            _q("SELECT * FROM dd_items WHERE deal_id = ? ORDER BY id", pg),
             (deal_id,)).fetchall()
     finally:
         conn.close()
@@ -340,10 +462,12 @@ def list_dd_items(deal_id, path=None):
 
 
 def dd_item_exists(deal_id, item_key, path=None):
+    pg = _using_postgres(path)
     conn = _connect(path)
     try:
         row = conn.execute(
-            "SELECT id FROM dd_items WHERE deal_id = ? AND item_key = ?",
+            _q("SELECT id FROM dd_items WHERE deal_id = ? AND item_key = ?",
+               pg),
             (deal_id, item_key)).fetchone()
     finally:
         conn.close()
@@ -355,11 +479,12 @@ def set_dd_status(deal_id, item_key, status, path=None):
     workflow state is tracked, not decided, by the engine."""
     if status not in DD_STATUSES:
         raise ValueError("Unknown DD status: %r" % (status,))
+    pg = _using_postgres(path)
     conn = _connect(path)
     try:
         cur = conn.execute(
-            "UPDATE dd_items SET status = ?, updated_at = ? "
-            "WHERE deal_id = ? AND item_key = ?",
+            _q("UPDATE dd_items SET status = ?, updated_at = ? "
+               "WHERE deal_id = ? AND item_key = ?", pg),
             (status, _now_iso(), deal_id, item_key))
         if cur.rowcount == 0:
             raise ValueError("Unknown DD item: %r" % (item_key,))
@@ -370,11 +495,12 @@ def set_dd_status(deal_id, item_key, status, path=None):
 
 
 def set_dd_notes(deal_id, item_key, notes, path=None):
+    pg = _using_postgres(path)
     conn = _connect(path)
     try:
         cur = conn.execute(
-            "UPDATE dd_items SET notes = ?, updated_at = ? "
-            "WHERE deal_id = ? AND item_key = ?",
+            _q("UPDATE dd_items SET notes = ?, updated_at = ? "
+               "WHERE deal_id = ? AND item_key = ?", pg),
             (notes or "", _now_iso(), deal_id, item_key))
         if cur.rowcount == 0:
             raise ValueError("Unknown DD item: %r" % (item_key,))
@@ -386,15 +512,21 @@ def set_dd_notes(deal_id, item_key, notes, path=None):
 def add_dd_document(deal_id, item_key, filename, stored_path, note="",
                     path=None):
     """Record an uploaded DD document. Returns the document id."""
+    pg = _using_postgres(path)
     conn = _connect(path)
     try:
-        cur = conn.execute(
+        insert_sql = _q(
             """INSERT INTO dd_documents
                (deal_id, item_key, filename, stored_path, note, uploaded_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (deal_id, item_key, filename, stored_path, note or "",
-             _now_iso()))
-        doc_id = cur.lastrowid
+               VALUES (?, ?, ?, ?, ?, ?)""", pg)
+        params = (deal_id, item_key, filename, stored_path, note or "",
+                  _now_iso())
+        if pg:
+            cur = conn.execute(insert_sql + " RETURNING id", params)
+            doc_id = cur.fetchone()["id"]
+        else:
+            cur = conn.execute(insert_sql, params)
+            doc_id = cur.lastrowid
         conn.commit()
     finally:
         conn.close()
@@ -414,16 +546,18 @@ def _dd_doc_row(row):
 
 
 def list_dd_documents(deal_id, item_key=None, path=None):
+    pg = _using_postgres(path)
     conn = _connect(path)
     try:
         if item_key:
             rows = conn.execute(
-                "SELECT * FROM dd_documents WHERE deal_id = ? AND item_key = ? "
-                "ORDER BY id",
+                _q("SELECT * FROM dd_documents WHERE deal_id = ? AND item_key = ? "
+                   "ORDER BY id", pg),
                 (deal_id, item_key)).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM dd_documents WHERE deal_id = ? ORDER BY id",
+                _q("SELECT * FROM dd_documents WHERE deal_id = ? ORDER BY id",
+                   pg),
                 (deal_id,)).fetchall()
     finally:
         conn.close()
@@ -431,10 +565,12 @@ def list_dd_documents(deal_id, item_key=None, path=None):
 
 
 def get_dd_document(doc_id, path=None):
+    pg = _using_postgres(path)
     conn = _connect(path)
     try:
         row = conn.execute(
-            "SELECT * FROM dd_documents WHERE id = ?", (doc_id,)).fetchone()
+            _q("SELECT * FROM dd_documents WHERE id = ?", pg),
+            (doc_id,)).fetchone()
     finally:
         conn.close()
     return _dd_doc_row(row) if row else None
@@ -442,12 +578,13 @@ def get_dd_document(doc_id, path=None):
 
 def dd_progress(deal_id, path=None):
     """Return (cleared_count, total_count) for a deal's DD checklist."""
+    pg = _using_postgres(path)
     conn = _connect(path)
     try:
         row = conn.execute(
-            "SELECT COUNT(*) AS total, "
-            "SUM(CASE WHEN status = 'cleared' THEN 1 ELSE 0 END) AS cleared "
-            "FROM dd_items WHERE deal_id = ?",
+            _q("SELECT COUNT(*) AS total, "
+               "SUM(CASE WHEN status = 'cleared' THEN 1 ELSE 0 END) AS cleared "
+               "FROM dd_items WHERE deal_id = ?", pg),
             (deal_id,)).fetchone()
     finally:
         conn.close()

@@ -45,6 +45,34 @@ app: `wsgi.py` (production) and `python3 app.py` (dev) call
 cap rates are recorded as evidence in the notes only, never used to derive
 NOI. Manual reseed: `python3 seed.py`.
 
+## Persistent database (PostgreSQL)
+
+The seed above makes the *baseline* restart-safe, but anything changed
+through the site after boot (new deals, status changes, DD work, uploads)
+still lives in the ephemeral SQLite file. For true persistence, set the
+`DATABASE_URL` environment variable to a PostgreSQL connection string:
+
+```bash
+DATABASE_URL=postgresql://user:password@host:5432/dbname python3 app.py
+```
+
+When `DATABASE_URL` is set, `records.py` uses PostgreSQL (via `psycopg`,
+already in `requirements.txt`) instead of SQLite — same tables, same API,
+same seed-on-boot behavior. Without it, everything works exactly as before
+on local SQLite, which is also what the test suite uses.
+
+On Render: create a PostgreSQL database (Render Postgres, Neon, and
+Supabase all work — any provider that gives you a `postgresql://` URL),
+then add `DATABASE_URL` as an environment variable on the
+`aletheiatelos-dealflow` service in the Render dashboard. Never commit the
+connection string; `render.yaml` declares the key with `sync: false` so the
+dashboard holds the secret. Redeploy after setting it; on boot the app
+creates the tables and seeds the 43 baseline deals into Postgres.
+
+Still ephemeral after this change: uploaded DD *files* (`artifacts/dd/`)
+and generated Excel workbooks (`artifacts/`). Their *metadata* is in the
+database; the files themselves need object storage (S3/R2) as a later step.
+
 ## Run the tests
 
 ```bash
@@ -127,7 +155,8 @@ app.py               Flask app: landing, intake, results, pipeline, detail, Exce
                      DD status/notes/upload/download routes
 validation.py        intake validation (required-missing / optional-missing / invalid / valid)
 underwriting.py      pure deterministic calculation layer: calculate(inputs)
-records.py           canonical deal record persistence (SQLite: deals, dd_items,
+records.py           canonical deal record persistence (SQLite by default;
+                     PostgreSQL when DATABASE_URL is set: deals, dd_items,
                      dd_documents tables; DD checklist seeding + backfill)
 excel_gen.py         standardized Excel workbook generator (artifact only)
 scripts/import_deals.py  JSON import through the real submission path

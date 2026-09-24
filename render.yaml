@@ -10,3 +10,9 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.3
+      # Persistent database. Leave unset for the ephemeral SQLite default.
+      # Set this in the Render dashboard (never commit the value) to a
+      # PostgreSQL connection string, e.g. from Render Postgres, Neon, or
+      # Supabase. Format: postgresql://user:password@host:port/dbname
+      - key: DATABASE_URL
+        sync: false
