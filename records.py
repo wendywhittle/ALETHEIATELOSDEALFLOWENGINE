@@ -1,6 +1,8 @@
 """AletheiaTelos DealFlow Engine — canonical deal record persistence.
 
-One table (`deals`) plus due-diligence tables (`dd_items`, `dd_documents`).
+One table (`deals`) plus due-diligence tables (`dd_items`, `dd_documents`)
+plus charter-analytics tables (`evidence`, `perspectives`, `scenarios`,
+`simulations`, `theses`, `outcomes`).
 The record is the canonical source of truth:
 
   identity          deal_id, name, asset_type, location
@@ -48,6 +50,8 @@ except ImportError:  # pragma: no cover - psycopg absent in dev/test envs
 
 import underwriting
 import validation
+import evidence as evidence_mod
+import journal as journal_mod
 
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DB = os.path.join(REPO_DIR, "dealflow.db")
@@ -189,6 +193,124 @@ CREATE TABLE IF NOT EXISTS dd_documents (
 )
 """
 
+# Charter-analytics tables. Additive: deal records, seed data, and existing
+# tables are untouched. SERIAL replaces INTEGER PRIMARY KEY AUTOINCREMENT
+# for PostgreSQL; CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS
+# are valid in both dialects.
+ANALYTICS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS evidence (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_id    TEXT NOT NULL,
+    type       TEXT NOT NULL,
+    source     TEXT NOT NULL DEFAULT '',
+    content    TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_deal ON evidence(deal_id);
+CREATE TABLE IF NOT EXISTS perspectives (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_id       TEXT NOT NULL,
+    lens          TEXT NOT NULL,
+    analysis_json TEXT NOT NULL,
+    created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_perspectives_deal ON perspectives(deal_id);
+CREATE TABLE IF NOT EXISTS scenarios (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_id      TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    overrides_json TEXT NOT NULL,
+    results_json TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scenarios_deal ON scenarios(deal_id);
+CREATE TABLE IF NOT EXISTS simulations (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_id       TEXT NOT NULL,
+    ranges_json   TEXT NOT NULL,
+    n             INTEGER NOT NULL,
+    seed          INTEGER NOT NULL,
+    summary_json  TEXT NOT NULL,
+    created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_simulations_deal ON simulations(deal_id);
+CREATE TABLE IF NOT EXISTS theses (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_id               TEXT NOT NULL,
+    thesis                TEXT NOT NULL,
+    key_assumptions_json  TEXT NOT NULL,
+    expected_outcome      TEXT NOT NULL DEFAULT '',
+    created_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_theses_deal ON theses(deal_id);
+CREATE TABLE IF NOT EXISTS outcomes (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_id               TEXT NOT NULL,
+    thesis_agreement      TEXT NOT NULL,
+    outcome_summary       TEXT NOT NULL,
+    actual_metrics_json   TEXT NOT NULL,
+    created_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_outcomes_deal ON outcomes(deal_id);
+"""
+
+PG_ANALYTICS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS evidence (
+    id         SERIAL PRIMARY KEY,
+    deal_id    TEXT NOT NULL,
+    type       TEXT NOT NULL,
+    source     TEXT NOT NULL DEFAULT '',
+    content    TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_deal ON evidence(deal_id);
+CREATE TABLE IF NOT EXISTS perspectives (
+    id            SERIAL PRIMARY KEY,
+    deal_id       TEXT NOT NULL,
+    lens          TEXT NOT NULL,
+    analysis_json TEXT NOT NULL,
+    created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_perspectives_deal ON perspectives(deal_id);
+CREATE TABLE IF NOT EXISTS scenarios (
+    id           SERIAL PRIMARY KEY,
+    deal_id      TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    overrides_json TEXT NOT NULL,
+    results_json TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scenarios_deal ON scenarios(deal_id);
+CREATE TABLE IF NOT EXISTS simulations (
+    id            SERIAL PRIMARY KEY,
+    deal_id       TEXT NOT NULL,
+    ranges_json   TEXT NOT NULL,
+    n             INTEGER NOT NULL,
+    seed          INTEGER NOT NULL,
+    summary_json  TEXT NOT NULL,
+    created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_simulations_deal ON simulations(deal_id);
+CREATE TABLE IF NOT EXISTS theses (
+    id                    SERIAL PRIMARY KEY,
+    deal_id               TEXT NOT NULL,
+    thesis                TEXT NOT NULL,
+    key_assumptions_json  TEXT NOT NULL,
+    expected_outcome      TEXT NOT NULL DEFAULT '',
+    created_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_theses_deal ON theses(deal_id);
+CREATE TABLE IF NOT EXISTS outcomes (
+    id                    SERIAL PRIMARY KEY,
+    deal_id               TEXT NOT NULL,
+    thesis_agreement      TEXT NOT NULL,
+    outcome_summary       TEXT NOT NULL,
+    actual_metrics_json   TEXT NOT NULL,
+    created_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_outcomes_deal ON outcomes(deal_id);
+"""
+
 
 def _database_url():
     return os.environ.get("DATABASE_URL", "").strip()
@@ -229,6 +351,19 @@ def _db_path(path=None):
     return path or os.environ.get("DEALFLOW_DB", DEFAULT_DB)
 
 
+def _execute_ddl(conn, schema, pg):
+    """Execute a multi-statement DDL string one statement at a time.
+
+    sqlite3's execute() rejects strings containing more than one
+    statement; splitting on ';' works for both dialects (no DDL here
+    contains a literal semicolon).
+    """
+    for stmt in schema.split(";"):
+        stmt = stmt.strip()
+        if stmt:
+            conn.execute(_q(stmt, pg))
+
+
 def _connect(path=None):
     pg = _using_postgres(path)
     if pg:
@@ -239,6 +374,7 @@ def _connect(path=None):
         conn.execute(PG_SCHEMA)
         conn.execute(PG_DD_ITEMS_SCHEMA)
         conn.execute(PG_DD_DOCUMENTS_SCHEMA)
+        _execute_ddl(conn, PG_ANALYTICS_SCHEMA, pg=True)
         conn.commit()
         _ensure_source_column(conn, pg=True)
         return conn
@@ -247,6 +383,7 @@ def _connect(path=None):
     conn.execute(SCHEMA)
     conn.execute(DD_ITEMS_SCHEMA)
     conn.execute(DD_DOCUMENTS_SCHEMA)
+    _execute_ddl(conn, ANALYTICS_SCHEMA, pg=False)
     conn.commit()
     _ensure_source_column(conn, pg=False)
     return conn
@@ -254,6 +391,16 @@ def _connect(path=None):
 
 def _now_iso():
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def _now_precise():
+    """Microsecond-precision timestamp for the analytics tables.
+
+    The observer matches outcomes to theses by strict "recorded after"
+    ordering; second precision would tie when a thesis and its outcome
+    are recorded in the same second.
+    """
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
 def _row_to_deal(row):
@@ -602,3 +749,334 @@ def dd_progress_all(path=None):
     finally:
         conn.close()
     return {r["deal_id"]: (r["cleared"] or 0, r["total"] or 0) for r in rows}
+
+
+# ---------------------------------------------------------------------------
+# Charter analytics: evidence log
+# ---------------------------------------------------------------------------
+
+def _insert_returning_id(conn, pg, sql, params):
+    """Run an INSERT and return the new row id on either dialect."""
+    if pg:
+        row = conn.execute(_q(sql + " RETURNING id", pg=True), params).fetchone()
+        new_id = row["id"]
+    else:
+        cur = conn.execute(sql, params)
+        new_id = cur.lastrowid
+    conn.commit()
+    return new_id
+
+
+def add_evidence(deal_id, evidence_type, content, source="", path=None):
+    """Append one typed evidence item to a deal's evidence log."""
+    evidence_mod.validate_evidence(evidence_type, content)
+    pg = _using_postgres(path)
+    conn = _connect(path)
+    try:
+        new_id = _insert_returning_id(
+            conn, pg,
+            "INSERT INTO evidence (deal_id, type, source, content, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (deal_id, evidence_type, source or "", content, _now_precise()))
+    finally:
+        conn.close()
+    return new_id
+
+
+def _evidence_row(row):
+    return {
+        "id": row["id"],
+        "deal_id": row["deal_id"],
+        "type": row["type"],
+        "source": row["source"],
+        "content": row["content"],
+        "created_at": row["created_at"],
+    }
+
+
+def list_evidence(deal_id, path=None):
+    """Return a deal's evidence log, oldest first."""
+    pg = _using_postgres(path)
+    conn = _connect(path)
+    try:
+        rows = conn.execute(
+            _q("SELECT * FROM evidence WHERE deal_id = ? ORDER BY id", pg),
+            (deal_id,)).fetchall()
+    finally:
+        conn.close()
+    return [_evidence_row(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Charter analytics: perspectives
+# ---------------------------------------------------------------------------
+
+def save_perspectives(deal_id, analyses, path=None):
+    """Store one analysis dict per lens; lenses are never merged.
+
+    ``analyses`` is the ``analyze_deal()`` output: {lens: analysis_dict}.
+    History is append-only: a second run adds rows, it never rewrites.
+    Returns the list of new row ids.
+    """
+    pg = _using_postgres(path)
+    conn = _connect(path)
+    try:
+        new_ids = []
+        for lens, analysis in analyses.items():
+            new_ids.append(_insert_returning_id(
+                conn, pg,
+                "INSERT INTO perspectives (deal_id, lens, analysis_json, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (deal_id, lens, json.dumps(analysis), _now_precise())))
+    finally:
+        conn.close()
+    return new_ids
+
+
+def _perspective_row(row):
+    return {
+        "id": row["id"],
+        "deal_id": row["deal_id"],
+        "lens": row["lens"],
+        "analysis": json.loads(row["analysis_json"]),
+        "created_at": row["created_at"],
+    }
+
+
+def list_perspectives(deal_id, path=None):
+    """Return all stored lens analyses for a deal, oldest first."""
+    pg = _using_postgres(path)
+    conn = _connect(path)
+    try:
+        rows = conn.execute(
+            _q("SELECT * FROM perspectives WHERE deal_id = ? ORDER BY id", pg),
+            (deal_id,)).fetchall()
+    finally:
+        conn.close()
+    return [_perspective_row(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Charter analytics: scenarios and simulations
+# ---------------------------------------------------------------------------
+
+def save_scenarios(deal_id, name, overrides, results, path=None):
+    """Store one scenario run (overrides + re-underwritten results)."""
+    pg = _using_postgres(path)
+    conn = _connect(path)
+    try:
+        new_id = _insert_returning_id(
+            conn, pg,
+            "INSERT INTO scenarios (deal_id, name, overrides_json, results_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (deal_id, name, json.dumps(overrides), json.dumps(results), _now_precise()))
+    finally:
+        conn.close()
+    return new_id
+
+
+def _scenario_row(row):
+    return {
+        "id": row["id"],
+        "deal_id": row["deal_id"],
+        "name": row["name"],
+        "overrides": json.loads(row["overrides_json"]),
+        "results": json.loads(row["results_json"]),
+        "created_at": row["created_at"],
+    }
+
+
+def list_scenarios(deal_id, path=None):
+    """Return all stored scenario runs for a deal, oldest first."""
+    pg = _using_postgres(path)
+    conn = _connect(path)
+    try:
+        rows = conn.execute(
+            _q("SELECT * FROM scenarios WHERE deal_id = ? ORDER BY id", pg),
+            (deal_id,)).fetchall()
+    finally:
+        conn.close()
+    return [_scenario_row(r) for r in rows]
+
+
+def save_simulation(deal_id, ranges, n, seed, summary, path=None):
+    """Store one Monte Carlo run's configuration and summary."""
+    pg = _using_postgres(path)
+    conn = _connect(path)
+    try:
+        new_id = _insert_returning_id(
+            conn, pg,
+            "INSERT INTO simulations (deal_id, ranges_json, n, seed, summary_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (deal_id, json.dumps(ranges), n, seed, json.dumps(summary), _now_precise()))
+    finally:
+        conn.close()
+    return new_id
+
+
+def _simulation_row(row):
+    return {
+        "id": row["id"],
+        "deal_id": row["deal_id"],
+        "ranges": json.loads(row["ranges_json"]),
+        "n": row["n"],
+        "seed": row["seed"],
+        "summary": json.loads(row["summary_json"]),
+        "created_at": row["created_at"],
+    }
+
+
+def list_simulations(deal_id, path=None):
+    """Return all stored simulation runs for a deal, oldest first."""
+    pg = _using_postgres(path)
+    conn = _connect(path)
+    try:
+        rows = conn.execute(
+            _q("SELECT * FROM simulations WHERE deal_id = ? ORDER BY id", pg),
+            (deal_id,)).fetchall()
+    finally:
+        conn.close()
+    return [_simulation_row(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Charter analytics: decision journal
+# ---------------------------------------------------------------------------
+
+def record_thesis(deal_id, thesis, key_assumptions=None, expected_outcome="", path=None):
+    """Record a falsifiable thesis for a deal.
+
+    Only allowed while the deal is in PURSUE status (see journal.py).
+    Theses are immutable: there is no edit path, only later outcomes.
+    Raises KeyError for an unknown deal, ValueError for any other status.
+    """
+    if not thesis or not str(thesis).strip():
+        raise ValueError("Thesis text must not be empty.")
+    deal = get_deal(deal_id, path)
+    journal_mod.check_thesis_allowed(deal, deal_id)
+    pg = _using_postgres(path)
+    conn = _connect(path)
+    try:
+        new_id = _insert_returning_id(
+            conn, pg,
+            "INSERT INTO theses (deal_id, thesis, key_assumptions_json, expected_outcome, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (deal_id, thesis, json.dumps(list(key_assumptions or [])),
+             expected_outcome or "", _now_precise()))
+    finally:
+        conn.close()
+    return new_id
+
+
+def _thesis_row(row):
+    return {
+        "id": row["id"],
+        "deal_id": row["deal_id"],
+        "thesis": row["thesis"],
+        "key_assumptions": json.loads(row["key_assumptions_json"]),
+        "expected_outcome": row["expected_outcome"],
+        "created_at": row["created_at"],
+    }
+
+
+def list_theses(deal_id, path=None):
+    """Return all theses for a deal, oldest first."""
+    pg = _using_postgres(path)
+    conn = _connect(path)
+    try:
+        rows = conn.execute(
+            _q("SELECT * FROM theses WHERE deal_id = ? ORDER BY id", pg),
+            (deal_id,)).fetchall()
+    finally:
+        conn.close()
+    return [_thesis_row(r) for r in rows]
+
+
+def record_outcome(deal_id, thesis_agreement, outcome_summary, actual_metrics=None, path=None):
+    """Record what actually happened for a deal.
+
+    ``thesis_agreement`` must be "agree", "disagree", or "unclear".
+    Outcomes do not edit theses; the observer view compares them in order.
+    """
+    if thesis_agreement not in ("agree", "disagree", "unclear"):
+        raise ValueError(
+            f"thesis_agreement must be 'agree', 'disagree', or 'unclear', got {thesis_agreement!r}.")
+    if not outcome_summary or not str(outcome_summary).strip():
+        raise ValueError("Outcome summary must not be empty.")
+    pg = _using_postgres(path)
+    conn = _connect(path)
+    try:
+        new_id = _insert_returning_id(
+            conn, pg,
+            "INSERT INTO outcomes (deal_id, thesis_agreement, outcome_summary, actual_metrics_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (deal_id, thesis_agreement, outcome_summary,
+             json.dumps(dict(actual_metrics or {})), _now_precise()))
+    finally:
+        conn.close()
+    return new_id
+
+
+def _outcome_row(row):
+    return {
+        "id": row["id"],
+        "deal_id": row["deal_id"],
+        "thesis_agreement": row["thesis_agreement"],
+        "outcome_summary": row["outcome_summary"],
+        "actual_metrics": json.loads(row["actual_metrics_json"]),
+        "created_at": row["created_at"],
+    }
+
+
+def list_outcomes(deal_id, path=None):
+    """Return all outcomes for a deal, oldest first."""
+    pg = _using_postgres(path)
+    conn = _connect(path)
+    try:
+        rows = conn.execute(
+            _q("SELECT * FROM outcomes WHERE deal_id = ? ORDER BY id", pg),
+            (deal_id,)).fetchall()
+    finally:
+        conn.close()
+    return [_outcome_row(r) for r in rows]
+
+
+def _all_theses(path=None):
+    pg = _using_postgres(path)
+    conn = _connect(path)
+    try:
+        rows = conn.execute("SELECT * FROM theses ORDER BY id").fetchall()
+    finally:
+        conn.close()
+    return [_thesis_row(r) for r in rows]
+
+
+def _all_outcomes(path=None):
+    pg = _using_postgres(path)
+    conn = _connect(path)
+    try:
+        rows = conn.execute("SELECT * FROM outcomes ORDER BY id").fetchall()
+    finally:
+        conn.close()
+    return [_outcome_row(r) for r in rows]
+
+
+def observer_summary(path=None):
+    """Build the observer audit view over the whole decision journal.
+
+    Compares each thesis against the first later outcome for the same deal,
+    in order; outcomes with no preceding thesis are listed as unmatched.
+    The observer judges the journal's calibration, never the deals.
+    """
+    theses = _all_theses(path)
+    outcomes = _all_outcomes(path)
+    deals_by_id: dict = {}
+    for entry in theses + outcomes:
+        deal_id = entry["deal_id"]
+        if deal_id not in deals_by_id:
+            deal = get_deal(deal_id, path)
+            deals_by_id[deal_id] = {
+                "name": deal["name"] if deal else None,
+                "status": deal["status"] if deal else None,
+            }
+    return journal_mod.build_observer_summary(theses, outcomes, deals_by_id)
