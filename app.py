@@ -18,6 +18,15 @@ Routes:
   POST /deals/<deal_id>/dd/notes    DD item notes
   POST /deals/<deal_id>/dd/upload   DD document upload (max 50 MB)
   GET  /deals/<deal_id>/dd/docs/<doc_id>  DD document download
+
+  Charter-analytics JSON API (blueprint in analytics_api.py; additive):
+  GET/POST /api/deals/<deal_id>/evidence       evidence log
+  GET/POST /api/deals/<deal_id>/perspectives   Bull/Bear/Quant/Skeptic lenses
+  GET/POST /api/deals/<deal_id>/scenarios      base/bull/bear/custom scenarios
+  GET/POST /api/deals/<deal_id>/simulate       seeded Monte Carlo simulation
+  GET/POST /api/deals/<deal_id>/thesis         decision-journal theses
+  GET/POST /api/deals/<deal_id>/outcomes       decision-journal outcomes
+  GET        /api/journal/observer              observer audit view
 """
 
 import os
@@ -29,9 +38,11 @@ from werkzeug.utils import secure_filename
 import excel_gen
 import records
 import validation
+from analytics_api import analytics_api
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB per upload
+app.register_blueprint(analytics_api)
 
 
 def _dd_upload_root():
